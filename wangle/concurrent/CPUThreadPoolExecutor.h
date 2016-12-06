@@ -85,6 +85,7 @@ CPUThreadPoolExecutor(
 
   struct CPUTask : public ThreadPoolExecutor::Task {
     // Must be noexcept move constructible so it can be used in MPMCQueue
+
     explicit CPUTask(
         folly::Func&& f,
         std::chrono::milliseconds expiration,
@@ -94,9 +95,7 @@ CPUThreadPoolExecutor(
     CPUTask()
       : Task(nullptr, std::chrono::milliseconds(0), nullptr),
         poison(true) {}
-    CPUTask(CPUTask&& o) noexcept : Task(std::move(o)), poison(o.poison) {}
-    CPUTask(const CPUTask&) = default;
-    CPUTask& operator=(const CPUTask&) = default;
+
     bool poison;
   };
 

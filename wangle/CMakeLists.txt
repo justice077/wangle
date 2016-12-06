@@ -7,7 +7,8 @@
 
 cmake_minimum_required(VERSION 2.8)
 
-set(CMAKE_CXX_FLAGS "-std=c++1y -fPIC")
+add_compile_options(-std=c++1y)
+add_compile_options(-fPIC)
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -24,6 +25,7 @@ find_library(GFLAGS_LIBRARY_PATH gflags)
 include_directories(
   ${CMAKE_SOURCE_DIR}/..
   ${FOLLY_INCLUDE_DIR}
+  ${BOOST_INCLUDE_DIR}
   ${OPENSSL_INCLUDE_DIR}
   ${INCLUDE_DIR}
 )
@@ -32,6 +34,7 @@ set(WANGLE_HEADER_DIRS
   acceptor
   bootstrap
   channel
+  client
   codec
   concurrent
   deprecated
@@ -52,6 +55,7 @@ set(WANGLE_SOURCES
   acceptor/ConnectionManager.cpp
   acceptor/LoadShedConfiguration.cpp
   acceptor/ManagedConnection.cpp
+  acceptor/SecureTransportType.cpp
   acceptor/SocketOptions.cpp
   acceptor/SSLAcceptorHandshakeHelper.cpp
   acceptor/TLSPlaintextPeekingCallback.cpp
@@ -67,6 +71,7 @@ set(WANGLE_SOURCES
   concurrent/Codel.cpp
   concurrent/GlobalExecutor.cpp
   concurrent/IOThreadPoolExecutor.cpp
+  concurrent/SerialExecutor.cpp
   concurrent/ThreadPoolExecutor.cpp
   deprecated/rx/Dummy.cpp
   ssl/PasswordInFile.cpp
@@ -76,18 +81,22 @@ set(WANGLE_SOURCES
   ssl/TLSTicketKeyManager.cpp
 )
 
-add_library(wangle STATIC
+add_library(wangle
   ${WANGLE_HEADERS}
   ${WANGLE_SOURCES}
 )
+
+if (BUILD_SHARED_LIBS)
+  set_target_properties(wangle
+    PROPERTIES VERSION 1.0.0 SOVERSION 1)
+endif()
 
 target_link_libraries(wangle
   ${FOLLY_LIBRARIES}
   ${Boost_LIBRARIES}
   ${OPENSSL_LIBRARIES}
   ${GLOG_LIBRARY_PATH}
-  ${GFLAGS_LIBRARY_PATH}
-  $<$<NOT:$<CXX_COMPILER_ID:Clang>>:-latomic>)
+  ${GFLAGS_LIBRARY_PATH})
 
 install(TARGETS wangle DESTINATION lib)
 foreach(dir ${WANGLE_HEADER_DIRS})
@@ -95,51 +104,52 @@ foreach(dir ${WANGLE_HEADER_DIRS})
           FILES_MATCHING PATTERN "*.h")
 endforeach()
 
-option(BUILD_TESTS "BUILD_TESTS" ON)
+IF(CMAKE_CROSSCOMPILING)
+   option(BUILD_TESTS "BUILD_TESTS" OFF)
+ELSE(CMAKE_CROSSCOMPILING)
+   option(BUILD_TESTS "BUILD_TESTS" ON)
+ENDIF(CMAKE_CROSSCOMPILING)
 
 if(BUILD_TESTS)
   enable_testing()
 
   include(ExternalProject)
 
-file(GLOB_RECURSE GMOCK_URL "gmock-1.7.0.zip")
-if (GMOCK_URL)
-  list(GET GMOCK_URL 0 GMOCK_URL)
-else()
-  set(GMOCK_URL https://googlemock.googlecode.com/files/gmock-1.7.0.zip)
-endif()
-
 # Download and install GoogleMock
   ExternalProject_Add(
-      gmock
-      URL ${GMOCK_URL}
-      PREFIX ${CMAKE_SOURCE_DIR}/gmock
+      gtest
+      GIT_REPOSITORY https://github.com/google/googletest.git
+      GIT_TAG release-1.8.0
+      PREFIX gtest
       # Disable install step
       INSTALL_COMMAND ""
       LOG_DOWNLOAD ON
+      LOG_UPDATE 1
       LOG_CONFIGURE ON
       LOG_BUILD ON
+      LOG_TEST 1
+      LOG_INSTALL 1
   )
 
   # Create a libgmock target to be used as a dependency by test programs
   add_library(libgmock IMPORTED STATIC GLOBAL)
-  add_dependencies(libgmock gmock)
+  add_dependencies(libgmock gtest)
   add_library(libgmock_main IMPORTED STATIC GLOBAL)
-  add_dependencies(libgmock_main gmock)
+  add_dependencies(libgmock_main gtest)
 
   # Set gmock properties
-  ExternalProject_Get_Property(gmock source_dir binary_dir)
+  ExternalProject_Get_Property(gtest source_dir binary_dir)
   set_target_properties(libgmock PROPERTIES
-      "IMPORTED_LOCATION" "${binary_dir}/libgmock.a"
+      "IMPORTED_LOCATION" "${binary_dir}/googlemock/libgmock.a"
       "IMPORTED_LINK_INTERFACE_LIBRARIES" "${CMAKE_THREAD_LIBS_INIT}"
   )
   set_target_properties(libgmock_main PROPERTIES
-      "IMPORTED_LOCATION" "${binary_dir}/libgmock_main.a"
+      "IMPORTED_LOCATION" "${binary_dir}/googlemock/libgmock_main.a"
       "IMPORTED_LINK_INTERFACE_LIBRARIES" "${CMAKE_THREAD_LIBS_INIT}"
   )
 
-  include_directories("${source_dir}/include")
-  include_directories("${source_dir}/gtest/include")
+  include_directories("${source_dir}/googlemock/include")
+  include_directories("${source_dir}/googletest/include")
 
   macro(add_gtest test_source test_name)
   add_executable(${test_name} ${test_source})
@@ -161,9 +171,10 @@ endif()
   add_gtest(channel/test/PipelineTest.cpp PipelineTest)
   add_gtest(codec/CodecTest.cpp CodecTest)
   add_gtest(concurrent/test/AsyncTest.cpp AsyncTest)
-  add_gtest(concurrent/test/ThreadedExecutorTest.cpp ThreadedExecutorTest)
   add_gtest(concurrent/test/CodelTest.cpp CodelTest)
   add_gtest(concurrent/test/GlobalExecutorTest.cpp GlobalExecutorTest)
+  add_gtest(concurrent/test/SerialExecutorTest.cpp SerialExecutorTest)
+  add_gtest(concurrent/test/ThreadedExecutorTest.cpp ThreadedExecutorTest)
   add_gtest(concurrent/test/ThreadPoolExecutorTest ThreadPoolExecutorTest)
   add_gtest(deprecated/rx/test/RxTest.cpp RxTest)
   # this test fails with an exception

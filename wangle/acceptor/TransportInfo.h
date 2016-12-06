@@ -9,6 +9,7 @@
  */
 #pragma once
 
+#include <wangle/acceptor/SecureTransportType.h>
 #include <wangle/ssl/SSLUtil.h>
 
 #include <chrono>
@@ -61,9 +62,9 @@ struct TransportInfo {
   std::chrono::microseconds rtt{0};
 
   /*
-   *  the estimated ratio of packet retransmisions in current socket
+   * the total number of packets retransmitted during the connection lifetime.
    */
-  double rtx{-1};
+  int64_t rtx{-1};
 
   /*
    * The congestion window size in MSS
@@ -93,6 +94,11 @@ struct TransportInfo {
    * is established.
    */
   std::chrono::milliseconds setupTime{0};
+
+  /*
+   * NOTE: Avoid using any fields starting with "ssl" for anything other than
+   * logging, as those field may not be populated for all security protocols.
+   */
 
   /*
    * time for setting up the SSL connection or SSL handshake
@@ -152,9 +158,9 @@ struct TransportInfo {
   std::shared_ptr<std::string> guessedUserAgent{nullptr};
 
   /**
-   * The result of SSL NPN negotiation.
+   * The application protocol running on the transport (h2, etc.)
    */
-  std::shared_ptr<std::string> sslNextProtocol{nullptr};
+  std::shared_ptr<std::string> appProtocol{nullptr};
 
   /*
    * total number of bytes sent over the connection
@@ -321,7 +327,12 @@ struct TransportInfo {
   /*
    * true if the connection is SSL, false otherwise
    */
-  bool ssl{false};
+  bool secure{false};
+
+  /**
+   * What is providing the security.
+   */
+  SecureTransportType securityType{SecureTransportType::NONE};
 
   /*
    * Additional protocol info.
@@ -333,6 +344,13 @@ struct TransportInfo {
    * raw signature (that gives the hash).
    */
   std::shared_ptr<std::string> tcpSignature{nullptr};
+
+  /*
+   * Whether or not TCP fast open succeded on this connection. Failure can occur
+   * due to several reasons, including cookies not matching or TFO not being
+   * advertised by the client.
+   */
+  bool tfoSucceded{false};
 
   /*
    * get the RTT value in milliseconds

@@ -61,6 +61,20 @@ class SSLContextManager {
 
  public:
 
+   /**
+   * Provide ability to perform explicit client certificate
+   * verification
+   */
+   struct ClientCertVerifyCallback {
+
+     // no-op. Should be overridden if actual
+     // verification is required
+     virtual void attachSSLContext(
+       const std::shared_ptr<folly::SSLContext>& sslCtx) = 0;
+     virtual ~ClientCertVerifyCallback() {}
+   };
+
+
   explicit SSLContextManager(folly::EventBase* eventBase,
                              const std::string& vipName, bool strict,
                              SSLStats* stats);
@@ -83,7 +97,8 @@ class SSLContextManager {
     const SSLCacheOptions& cacheOptions,
     const TLSTicketKeySeeds* ticketSeeds,
     const folly::SocketAddress& vipAddress,
-    const std::shared_ptr<SSLCacheProvider> &externalCache);
+    const std::shared_ptr<SSLCacheProvider> &externalCache,
+    SslContexts* contexts = nullptr);
 
   /**
    * Resets SSLContextManager with new X509s
@@ -147,10 +162,14 @@ class SSLContextManager {
     clientHelloTLSExtStats_ = stats;
   }
 
+  void setClientVerifyCallback(std::unique_ptr<ClientCertVerifyCallback> cb) {
+        clientCertVerifyCallback_ = std::move(cb);
+  }
+
  protected:
   virtual void enableAsyncCrypto(
-    const std::shared_ptr<folly::SSLContext>& sslCtx,
-    const SSLContextConfig& ctxConfig) {
+    const std::shared_ptr<folly::SSLContext>&,
+    const SSLContextConfig&) {
     LOG(FATAL) << "Unsupported in base SSLContextManager";
   }
 
@@ -178,30 +197,8 @@ class SSLContextManager {
     insertSSLCtxByDomainName(dn, len, sslCtx, contexts_, certCrypto);
   }
 
-
  private:
   SSLContextManager(const SSLContextManager&) = delete;
-
-  /**
-   * Add a new X509 to SSLContextManager.  The details of a X509
-   * is passed as a SSLContextConfig object.
-   * Not threadsafe
-   *
-   * @param ctxConfig     Details of a X509, its private key, password, etc.
-   * @param cacheOptions  Options for how to do session caching.
-   * @param ticketSeeds   If non-null, the initial ticket key seeds to use.
-   * @param vipAddress    Which VIP are the X509(s) used for? It is only for
-   *                      for user friendly log message
-   * @param externalCache Optional external provider for the session cache;
-   *                      may be null
-   */
-  void addSSLContextConfigUnsafe(
-    const SSLContextConfig& ctxConfigs,
-    const SSLCacheOptions& cacheOptions,
-    const TLSTicketKeySeeds* ticketSeeds,
-    const folly::SocketAddress& vipAddress,
-    const std::shared_ptr<SSLCacheProvider> &externalCache,
-    SslContexts& contexts);
 
   void ctxSetupByOpensslFeature(
     std::shared_ptr<folly::SSLContext> sslCtx,
@@ -265,7 +262,7 @@ class SSLContextManager {
   ClientHelloExtStats* clientHelloTLSExtStats_{nullptr};
   SSLContextConfig::SNINoMatchFn noMatchFn_;
   bool strict_{true};
-  mutable folly::SharedMutex contextsMutex_;
+  std::unique_ptr<ClientCertVerifyCallback> clientCertVerifyCallback_{nullptr};
 };
 
 } // namespace wangle

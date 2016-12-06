@@ -159,12 +159,13 @@ SSLContextManager::~SSLContextManager() = default;
 
 SSLContextManager::SSLContextManager(
   folly::EventBase* eventBase,
-  const std::string& vipName,
+  const std::string& /* vipName */,
   bool strict,
   SSLStats* stats) :
     stats_(stats),
     eventBase_(eventBase),
     strict_(strict) {
+
 }
 
 void SSLContextManager::SslContexts::swap(SslContexts& other) noexcept {
@@ -193,15 +194,24 @@ void SSLContextManager::resetSSLContextConfigs(
   const std::shared_ptr<SSLCacheProvider>& externalCache) {
 
   SslContexts contexts;
-  for (const auto& ctxConfig : ctxConfigs) {
-    addSSLContextConfigUnsafe(ctxConfig,
-                              cacheOptions,
-                              ticketSeeds,
-                              vipAddress,
-                              externalCache,
-                              contexts);
+  TLSTicketKeySeeds oldTicketSeeds;
+  // This assumes that all ctxs have the same ticket seeds. Which we assume in
+  // other places as well
+  if (!ticketSeeds) {
+    contexts_.ticketManagers[0]->getTLSTicketKeySeeds(
+        oldTicketSeeds.oldSeeds,
+        oldTicketSeeds.currentSeeds,
+        oldTicketSeeds.newSeeds);
   }
-  folly::SharedMutex::WriteHolder wh(contextsMutex_);
+
+  for (const auto& ctxConfig : ctxConfigs) {
+    addSSLContextConfig(ctxConfig,
+                        cacheOptions,
+                        ticketSeeds ? ticketSeeds : &oldTicketSeeds,
+                        vipAddress,
+                        externalCache,
+                        &contexts);
+  }
   contexts_.swap(contexts);
 }
 
@@ -210,23 +220,12 @@ void SSLContextManager::addSSLContextConfig(
   const SSLCacheOptions& cacheOptions,
   const TLSTicketKeySeeds* ticketSeeds,
   const folly::SocketAddress& vipAddress,
-  const std::shared_ptr<SSLCacheProvider>& externalCache) {
-    folly::SharedMutex::WriteHolder wh(contextsMutex_);
-    addSSLContextConfigUnsafe(ctxConfig,
-                              cacheOptions,
-                              ticketSeeds,
-                              vipAddress,
-                              externalCache,
-                              contexts_);
-}
-
-void SSLContextManager::addSSLContextConfigUnsafe(
-  const SSLContextConfig& ctxConfig,
-  const SSLCacheOptions& cacheOptions,
-  const TLSTicketKeySeeds* ticketSeeds,
-  const folly::SocketAddress& vipAddress,
   const std::shared_ptr<SSLCacheProvider>& externalCache,
-  SslContexts& contexts) {
+  SslContexts* contexts) {
+
+  if (!contexts) {
+    contexts = &contexts_;
+  }
 
   unsigned numCerts = 0;
   std::string commonName;
@@ -368,9 +367,17 @@ void SSLContextManager::addSSLContextConfigUnsafe(
 
   if (!ctxConfig.clientCAFile.empty()) {
     try {
-      sslCtx->setVerificationOption(ctxConfig.clientVerification);
       sslCtx->loadTrustedCertificates(ctxConfig.clientCAFile.c_str());
       sslCtx->loadClientCAList(ctxConfig.clientCAFile.c_str());
+
+      // Only allow over-riding of verification callback if one
+      // isn't explicitly set on the context
+      if (clientCertVerifyCallback_ == nullptr) {
+        sslCtx->setVerificationOption(ctxConfig.clientVerification);
+      } else {
+        clientCertVerifyCallback_->attachSSLContext(sslCtx);
+      }
+
     } catch (const std::exception& ex) {
       string msg = folly::to<string>("error loading client CA",
                                      ctxConfig.clientCAFile, ": ",
@@ -416,14 +423,14 @@ void SSLContextManager::addSSLContextConfigUnsafe(
     createTicketManagerHelper(sslCtx, ticketSeeds, ctxConfig, stats_);
 
   // finalize sslCtx setup by the individual features supported by openssl
-  ctxSetupByOpensslFeature(sslCtx, ctxConfig, contexts);
+  ctxSetupByOpensslFeature(sslCtx, ctxConfig, *contexts);
 
   try {
     insert(sslCtx,
            std::move(sessionCacheManager),
            std::move(ticketManager),
            ctxConfig.isDefault,
-           contexts);
+           *contexts);
   } catch (const std::exception& ex) {
     string msg = folly::to<string>("Error adding certificate : ",
                                    folly::exceptionStr(ex));
@@ -447,7 +454,6 @@ SSLContextManager::serverNameCallback(SSL* ssl) {
     }
     reqHasServerName = false;
 
-    folly::SharedMutex::ReadHolder rh(contextsMutex_);
     sn = contexts_.defaultCtxDomainName.c_str();
   }
   size_t snLen = strlen(sn);
@@ -470,6 +476,13 @@ SSLContextManager::serverNameCallback(SSL* ssl) {
         certCryptoReq = CertCrypto::BEST_AVAILABLE;
         break;
       }
+    }
+
+    // Assume the client supports SHA2 if it sent SNI.
+    const auto& extensions = clientInfo->clientHelloExtensions_;
+    if (std::find(extensions.begin(), extensions.end(),
+          folly::ssl::TLSExtension::SERVER_NAME) != extensions.end()) {
+      certCryptoReq = CertCrypto::BEST_AVAILABLE;
     }
   }
 
@@ -771,14 +784,12 @@ void SSLContextManager::insertIntoDnMap(SSLContextKey key,
 }
 
 void SSLContextManager::clear() {
-  folly::SharedMutex::WriteHolder wh(contextsMutex_);
   contexts_.clear();
 }
 
 shared_ptr<SSLContext>
 SSLContextManager::getSSLCtx(const SSLContextKey& key) const
 {
-  folly::SharedMutex::ReadHolder rh(contextsMutex_);
   auto ctx = getSSLCtxByExactDomain(key);
   if (ctx) {
     return ctx;
@@ -792,7 +803,6 @@ SSLContextManager::getSSLCtxBySuffix(const SSLContextKey& key) const
   size_t dot;
 
   if ((dot = key.dnString.find_first_of(".")) != DNString::npos) {
-    folly::SharedMutex::ReadHolder rh(contextsMutex_);
     SSLContextKey suffixKey(DNString(key.dnString, dot),
         key.certCrypto);
     const auto v = contexts_.dnMap.find(suffixKey);
@@ -812,7 +822,6 @@ SSLContextManager::getSSLCtxBySuffix(const SSLContextKey& key) const
 shared_ptr<SSLContext>
 SSLContextManager::getSSLCtxByExactDomain(const SSLContextKey& key) const
 {
-  folly::SharedMutex::ReadHolder rh(contextsMutex_);
   const auto v = contexts_.dnMap.find(key);
   if (v == contexts_.dnMap.end()) {
     VLOG(6) << folly::stringPrintf("\"%s\" is not an exact match",
@@ -827,7 +836,6 @@ SSLContextManager::getSSLCtxByExactDomain(const SSLContextKey& key) const
 
 shared_ptr<SSLContext>
 SSLContextManager::getDefaultSSLCtx() const{
-  folly::SharedMutex::ReadHolder rh(contextsMutex_);
   return contexts_.defaultCtx;
 }
 
@@ -837,7 +845,6 @@ SSLContextManager::reloadTLSTicketKeys(
   const std::vector<std::string>& currentSeeds,
   const std::vector<std::string>& newSeeds) {
 #ifdef SSL_CTRL_SET_TLSEXT_TICKET_KEY_CB
-  folly::SharedMutex::ReadHolder rh(contextsMutex_);
   for (auto& tmgr: contexts_.ticketManagers) {
     tmgr->setTLSTicketKeySeeds(oldSeeds, currentSeeds, newSeeds);
   }

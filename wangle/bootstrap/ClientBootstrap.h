@@ -7,7 +7,6 @@
  *  of patent rights can be found in the PATENTS file in the same directory.
  *
  */
-
 #pragma once
 
 #include <folly/io/async/AsyncSSLSocket.h>
@@ -68,16 +67,15 @@ class ClientBootstrap : public BaseClientBootstrap<Pipeline> {
       const folly::SocketAddress& address,
       std::chrono::milliseconds timeout =
           std::chrono::milliseconds(0)) override {
-    auto base = folly::EventBaseManager::get()->getEventBase();
-    if (group_) {
-      base = group_->getEventBase();
-    }
+    auto base = (group_)
+      ? group_->getEventBase()
+      : folly::EventBaseManager::get()->getEventBase();
     folly::Future<Pipeline*> retval((Pipeline*)nullptr);
     base->runImmediatelyOrRunInEventBaseThreadAndWait([&](){
       std::shared_ptr<folly::AsyncSocket> socket;
       if (this->sslContext_) {
-        auto sslSocket = folly::AsyncSSLSocket::newSocket(
-          this->sslContext_, base);
+        auto sslSocket =
+            folly::AsyncSSLSocket::newSocket(this->sslContext_, base);
         if (this->sslSession_) {
           sslSocket->setSSLSession(this->sslSession_, true);
         }
@@ -91,8 +89,7 @@ class ClientBootstrap : public BaseClientBootstrap<Pipeline> {
           new ConnectCallback(std::move(promise), this),
           address,
           timeout.count());
-      BaseClientBootstrap<Pipeline>::makePipeline(
-        socket);
+      this->makePipeline(socket);
     });
     return retval;
   }
@@ -103,4 +100,15 @@ class ClientBootstrap : public BaseClientBootstrap<Pipeline> {
   int port_;
   std::shared_ptr<wangle::IOThreadPoolExecutor> group_;
 };
+
+class ClientBootstrapFactory
+    : public BaseClientBootstrapFactory<BaseClientBootstrap<>> {
+ public:
+  ClientBootstrapFactory() {}
+
+  BaseClientBootstrap<>::Ptr newClient() override {
+    return folly::make_unique<ClientBootstrap<DefaultPipeline>>();
+  }
+};
+
 } // namespace wangle

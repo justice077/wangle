@@ -12,8 +12,8 @@
 namespace wangle {
 
 template <typename Pipeline, typename R>
-void AcceptRoutingHandler<Pipeline, R>::read(Context* ctx,
-                                             AcceptPipelineType conn) {
+void AcceptRoutingHandler<Pipeline, R>::read(
+    Context*, AcceptPipelineType conn) {
   if (conn.type() != typeid(ConnInfo&)) {
     return;
   }
@@ -47,13 +47,13 @@ void AcceptRoutingHandler<Pipeline, R>::read(Context* ctx,
 }
 
 template <typename Pipeline, typename R>
-void AcceptRoutingHandler<Pipeline, R>::readEOF(Context* ctx) {
+void AcceptRoutingHandler<Pipeline, R>::readEOF(Context*) {
   // Null implementation to terminate the call in this handler
 }
 
 template <typename Pipeline, typename R>
 void AcceptRoutingHandler<Pipeline, R>::readException(
-    Context* ctx, folly::exception_wrapper ex) {
+    Context*, folly::exception_wrapper) {
   // Null implementation to terminate the call in this handler
 }
 
@@ -78,28 +78,26 @@ void AcceptRoutingHandler<Pipeline, R>::onRoutingData(
   auto acceptor = acceptors_[hash % acceptors_.size()];
 
   // Switch to the new acceptor's thread
-  auto mwRoutingData =
-      folly::makeMoveWrapper<typename RoutingDataHandler<R>::RoutingData>(
-          std::move(routingData));
-  acceptor->getEventBase()->runInEventBaseThread([=]() mutable {
-    socket->attachEventBase(acceptor->getEventBase());
+  acceptor->getEventBase()->runInEventBaseThread(
+      [ =, routingData = std::move(routingData) ]() mutable {
+        socket->attachEventBase(acceptor->getEventBase());
 
-    auto routingHandler =
-        routingPipeline->template getHandler<RoutingDataHandler<R>>();
-    DCHECK(routingHandler);
-    auto transportInfo = routingPipeline->getTransportInfo();
-    auto pipeline = childPipelineFactory_->newPipeline(
-        socket, mwRoutingData->routingData, routingHandler, transportInfo);
+        auto routingHandler =
+            routingPipeline->template getHandler<RoutingDataHandler<R>>();
+        DCHECK(routingHandler);
+        auto transportInfo = routingPipeline->getTransportInfo();
+        auto pipeline = childPipelineFactory_->newPipeline(
+            socket, routingData.routingData, routingHandler, transportInfo);
 
-    auto connection =
-        new typename ServerAcceptor<Pipeline>::ServerConnection(pipeline);
-    acceptor->addConnection(connection);
+        auto connection =
+            new typename ServerAcceptor<Pipeline>::ServerConnection(pipeline);
+        acceptor->addConnection(connection);
 
-    pipeline->transportActive();
+        pipeline->transportActive();
 
-    // Pass in the buffered bytes to the pipeline
-    pipeline->read(mwRoutingData->bufQueue);
-  });
+        // Pass in the buffered bytes to the pipeline
+        pipeline->read(routingData.bufQueue);
+      });
 }
 
 template <typename Pipeline, typename R>

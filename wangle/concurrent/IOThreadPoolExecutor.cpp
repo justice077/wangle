@@ -10,7 +10,6 @@
 
 #include <wangle/concurrent/IOThreadPoolExecutor.h>
 
-#include <folly/MoveWrapper.h>
 #include <glog/logging.h>
 
 #include <folly/detail/MemoryIdler.h>
@@ -89,10 +88,9 @@ void IOThreadPoolExecutor::add(
   }
   auto ioThread = pickThread();
 
-  auto moveTask = folly::makeMoveWrapper(
-      Task(std::move(func), expiration, std::move(expireCallback)));
-  auto wrappedFunc = [ioThread, moveTask] () mutable {
-    runTask(ioThread, std::move(*moveTask));
+  auto task = Task(std::move(func), expiration, std::move(expireCallback));
+  auto wrappedFunc = [ ioThread, task = std::move(task) ]() mutable {
+    runTask(ioThread, std::move(task));
     ioThread->pendingTasks--;
   };
 
@@ -141,8 +139,8 @@ void IOThreadPoolExecutor::threadRun(ThreadPtr thread) {
   ioThread->eventBase = eventBaseManager_->getEventBase();
   thisThread_.reset(new std::shared_ptr<IOThread>(ioThread));
 
-  auto idler = new MemoryIdlerTimeout(ioThread->eventBase);
-  ioThread->eventBase->runBeforeLoop(idler);
+  auto idler = folly::make_unique<MemoryIdlerTimeout>(ioThread->eventBase);
+  ioThread->eventBase->runBeforeLoop(idler.get());
 
   ioThread->eventBase->runInEventBaseThread(
       [thread]{ thread->startupBaton.post(); });
@@ -154,6 +152,7 @@ void IOThreadPoolExecutor::threadRun(ThreadPtr thread) {
       ioThread->eventBase->loopOnce();
     }
   }
+  idler.reset();
   if (isWaitForAll_) {
     // some tasks, like thrift asynchronous calls, create additional
     // event base hookups, let's wait till all of them complete.

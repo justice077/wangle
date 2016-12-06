@@ -7,14 +7,15 @@
  *  of patent rights can be found in the PATENTS file in the same directory.
  *
  */
-#include "wangle/channel/Handler.h"
 #include <wangle/bootstrap/ServerBootstrap.h>
 #include <wangle/channel/broadcast/BroadcastPool.h>
 #include <wangle/channel/broadcast/test/Mocks.h>
 
-using namespace wangle;
+#include "wangle/channel/Handler.h"
+
 using namespace folly;
 using namespace testing;
+using namespace wangle;
 
 class BroadcastPoolTest : public Test {
  public:
@@ -24,8 +25,11 @@ class BroadcastPoolTest : public Test {
 
     pipelineFactory =
         std::make_shared<StrictMock<MockBroadcastPipelineFactory>>();
-    pool = folly::make_unique<BroadcastPool<int, std::string>>(serverPool,
-                                                               pipelineFactory);
+
+    pool = folly::make_unique<BroadcastPool<int, std::string>>(
+        serverPool,
+        pipelineFactory,
+        std::make_shared<ClientBootstrapFactory>());
 
     startServer();
   }
@@ -46,7 +50,7 @@ class BroadcastPoolTest : public Test {
   class ServerPipelineFactory : public PipelineFactory<DefaultPipeline> {
    public:
     DefaultPipeline::Ptr newPipeline(
-        std::shared_ptr<AsyncTransportWrapper> sock) override {
+        std::shared_ptr<AsyncTransportWrapper>) override {
       auto pipeline = DefaultPipeline::create();
       pipeline->addBack(new BytesToBytesHandler());
       pipeline->finalize();
@@ -219,7 +223,7 @@ TEST_F(BroadcastPoolTest, ConnectError) {
       .then([&](BroadcastHandler<int, std::string>* h) {
         handler1 = h;
       })
-      .onError([&] (const std::exception& ex) {
+      .onError([&] (const std::exception&) {
         handler1Error = true;
         EXPECT_FALSE(pool->isBroadcasting(routingData));
       });
@@ -232,7 +236,7 @@ TEST_F(BroadcastPoolTest, ConnectError) {
       .then([&](BroadcastHandler<int, std::string>* h) {
         handler2 = h;
       })
-      .onError([&] (const std::exception& ex) {
+      .onError([&] (const std::exception&) {
         handler2Error = true;
         EXPECT_FALSE(pool->isBroadcasting(routingData));
       });
@@ -286,7 +290,7 @@ TEST_F(BroadcastPoolTest, ConnectErrorServerPool) {
       .then([&](BroadcastHandler<int, std::string>* h) {
         handler1 = h;
       })
-      .onError([&] (const std::exception& ex) {
+      .onError([&] (const std::exception&) {
         handler1Error = true;
         EXPECT_FALSE(pool->isBroadcasting(routingData));
       });
@@ -310,7 +314,7 @@ TEST_F(BroadcastPoolTest, RoutingDataException) {
       .then([&](BroadcastHandler<int, std::string>* h) {
         handler = h;
       })
-      .onError([&] (const std::exception& ex) {
+      .onError([&] (const std::exception&) {
         handlerError = true;
         EXPECT_FALSE(pool->isBroadcasting(routingData));
       });
@@ -338,14 +342,14 @@ TEST_F(BroadcastPoolTest, RoutingDataPipelineDeletion) {
       .then([&](BroadcastHandler<int, std::string>* h) {
         handler = h;
       })
-      .onError([&] (const std::exception& ex) {
+      .onError([&] (const std::exception&) {
         handlerError = true;
         EXPECT_FALSE(pool->isBroadcasting(routingData));
       });
   EXPECT_TRUE(handler == nullptr);
   EXPECT_CALL(*pipelineFactory, setRoutingData(_, "url"))
       .WillOnce(Invoke(
-          [&](DefaultPipeline* pipeline, const std::string& routingData) {
+          [&](DefaultPipeline* pipeline, const std::string&) {
             pipeline->readException(std::runtime_error("upstream error"));
           }));
   base->loopOnce(); // Do async connect
@@ -353,7 +357,6 @@ TEST_F(BroadcastPoolTest, RoutingDataPipelineDeletion) {
   EXPECT_TRUE(handlerError);
   EXPECT_FALSE(pool->isBroadcasting(routingData));
 }
-
 
 TEST_F(BroadcastPoolTest, HandlerEOFPoolDeletion) {
   // Test against use-after-free on BroadcastManager when the pool
@@ -400,7 +403,7 @@ TEST_F(BroadcastPoolTest, SubscriberDeletionBeforeConnect) {
   // No broadcast available for routingData. Kick off a connect request.
   EXPECT_FALSE(pool->isBroadcasting(routingData));
   pool->getHandler(routingData)
-      .then([&](BroadcastHandler<int, std::string>* h) {
+      .then([&](BroadcastHandler<int, std::string>*) {
         handler1Connected = true;
         // Do not subscribe to the handler. This will simulate
         // the caller going away before we get here.
@@ -411,7 +414,7 @@ TEST_F(BroadcastPoolTest, SubscriberDeletionBeforeConnect) {
   // Invoke getHandler() for the same routing data when a connect request
   // is outstanding
   pool->getHandler(routingData)
-      .then([&](BroadcastHandler<int, std::string>* h) {
+      .then([&](BroadcastHandler<int, std::string>*) {
         handler2Connected = true;
         // Do not subscribe to the handler.
       });
@@ -433,7 +436,7 @@ TEST_F(BroadcastPoolTest, SubscriberDeletionBeforeConnect) {
   handler1Connected = false;
   handler2Connected = false;
   pool->getHandler(routingData)
-      .then([&](BroadcastHandler<int, std::string>* h) {
+      .then([&](BroadcastHandler<int, std::string>*) {
         handler1Connected = true;
         // Do not subscribe to the handler. This will simulate
         // the caller going away before we get here.
